@@ -1,0 +1,11 @@
+[package]
+name = "luno_compiler"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+runtime = { path = "../runtime" }
+logos = "0.16.1"
+
+[features]
+jit = ["runtime/jit"]

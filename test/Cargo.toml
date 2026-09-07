@@ -1,0 +1,9 @@
+[package]
+name = "test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# luno_compiler = { path = "../luno_compiler", features = ["jit"] }
+luno_compiler = { path = "../luno_compiler"}
+runtime = { path = "../runtime"}
