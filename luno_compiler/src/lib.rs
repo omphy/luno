@@ -10,6 +10,8 @@ pub use runtime::vm;
 
 use compiler::Compiler;
 use parser::parse_code;
+use runtime::vm::Table;
+use runtime::vm::Variable;
 use runtime::{Runtime, Language, SharedContext, standard_lib};
 
 pub struct Lua;
@@ -18,11 +20,12 @@ impl Lua {
     pub fn add_library(runtime: &mut Runtime) {
         // Print stuff
         runtime.vm.set_global_function("print", standard_lib::vm_print);
-
-        // // Array stuff
-        runtime.vm.set_global_function("array_set".to_string(), standard_lib::array_set);
-        // runtime.vm.push_global_function("array_append".to_string(), create_rust_function(standard_lib::array_append));
-        // runtime.vm.push_global_function("array_get".to_string(), create_rust_function(standard_lib::array_get));
+        
+        // Coroutines
+        let mut coroutine = Table::new();
+        let new = Variable::String(runtime.vm.intern_string("new"));
+        coroutine.set(new, Variable::Float(5.5));
+        runtime.vm.set_global("coroutine", coroutine);
     }
 
     pub fn new() -> Runtime {

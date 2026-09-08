@@ -20,6 +20,14 @@ impl IntoVariable for Chunk {
     }
 }
 
+impl IntoVariable for Table {
+    fn into_variable(self, vm: &mut VM) -> Variable {
+        // Allocate space to store it
+        let heap_index = vm.tables.insert(self);
+        Variable::Table(heap_index)
+    }
+}
+
 impl VM {
     // Set global for everything
     pub fn set_global<T: IntoVariable>(&mut self, name: impl Into<String>, value: T) {

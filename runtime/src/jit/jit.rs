@@ -1,3 +1,5 @@
+// TODO: rewrite from the ground up, its outdated, non-functional, weird, and a bunch of pure ai generated slopcode
+
 use cranelift::{
     module::{
         default_libcall_names,

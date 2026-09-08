@@ -145,7 +145,7 @@ impl Chunk {
         }
     }
 
-    /// Internal helper to update the number of registers required by this chunk [1].
+    /// Internal helper to update the number of registers required by this chunk.
     #[inline(always)]
     pub fn track_register(&mut self, reg: u8) {
         let needed = (reg as usize) + 1;
@@ -167,7 +167,7 @@ impl Chunk {
             self.functions.len()
         );
 
-        // 1. Print Constants Pool (Numbers)
+        // Print Constants Pool (Numbers)
         if !self.constants.is_empty() {
             println!("\n [Constants Pool]");
             for (i, &raw_bits) in self.constants.iter().enumerate() {
@@ -176,7 +176,7 @@ impl Chunk {
             }
         }
 
-        // 2. Print String Pool
+        // Print String Pool
         if !self.string_constants.is_empty() {
             println!("\n [String Pool]");
             for (i, s) in self.string_constants.iter().enumerate() {
@@ -184,7 +184,7 @@ impl Chunk {
             }
         }
 
-        // 3. Print Nested Functions Pool Summary
+        // Print Nested Functions Pool Summary
         if !self.functions.is_empty() {
             println!("\n [Nested Functions Pool]");
             for (i, func_chunk) in self.functions.iter().enumerate() {
@@ -199,7 +199,7 @@ impl Chunk {
             }
         }
 
-        // 4. Print Instruction Disassembly Table
+        // Print Instruction Disassembly Table
         println!("\n {}", "-".repeat(68));
         println!("  IP   | RAW HEX    | OPCODE          | OPERANDS / DETAILS");
         println!(" {}", "-".repeat(68));
@@ -345,14 +345,14 @@ impl Chunk {
         }
         println!(" {}\n", "-".repeat(68));
 
-        // 5. Recursively disassemble nested functions
+        // Recursively disassemble nested functions
         for (i, func_chunk) in self.functions.iter().enumerate() {
             func_chunk.disassemble(&format!("{}_func_{}", name, i));
         }
     }
 
     pub fn add_loadfloat(&mut self, target: u8, value: f64) {
-        self.track_register(target); // <-- Track target register
+        self.track_register(target);
         if let Some(index) = self.resolve_constant(value.to_bits()) {
             self.code
                 .push(pack_u32_2x8_1x16(Opcode::LOADFLOAT as u8, target, index));
@@ -365,7 +365,7 @@ impl Chunk {
     }
 
     pub fn add_loadbool(&mut self, target: u8, value: bool) {
-        self.track_register(target); // <-- Track target register
+        self.track_register(target);
         self.code.push(pack_u32_4x8(
             Opcode::LOADBOOL as u8,
             target,
@@ -375,13 +375,13 @@ impl Chunk {
     }
 
     pub fn add_loadnil(&mut self, target: u8) {
-        self.track_register(target); // <-- Track target register
+        self.track_register(target);
         self.code
             .push(pack_u32_4x8(Opcode::LOADNIL as u8, target, 0, 0));
     }
 
     pub fn add_loadfunc(&mut self, target: u8, func: Chunk) {
-        self.track_register(target); // <-- Track target register
+        self.track_register(target);
         let func_pos = self.functions.len() as u16;
         self.functions.push(func);
 
@@ -390,7 +390,7 @@ impl Chunk {
     }
 
     pub fn add_loadstr(&mut self, target: u8, value: &str) {
-        self.track_register(target); // <-- Track target register
+        self.track_register(target);
         let string_pos = self.string_constants.len() as u16;
         self.string_constants.push(value.to_string());
 
@@ -402,7 +402,7 @@ impl Chunk {
     }
 
     pub fn add_skip_on_true(&mut self, condition: u8) {
-        self.track_register(condition); // <-- Track condition register
+        self.track_register(condition);
         self.code
             .push(pack_u32_4x8(Opcode::SKIP_ON_TRUE as u8, condition, 0, 0));
     }
@@ -416,13 +416,13 @@ impl Chunk {
     }
 
     pub fn add_newarray(&mut self, target: u8) {
-        self.track_register(target); // <-- Track target register
+        self.track_register(target);
         self.code
             .push(pack_u32_4x8(Opcode::NEW_ARRAY as u8, target, 0, 0));
     }
 
     pub fn add_newtable(&mut self, target: u8) {
-        self.track_register(target); // <-- Track target register
+        self.track_register(target);
         self.code
             .push(pack_u32_4x8(Opcode::NEW_TABLE as u8, target, 0, 0));
     }

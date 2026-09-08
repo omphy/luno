@@ -10,6 +10,8 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    // region:helpers
+
     /// Create a new parser
     fn new(source: &'a str) -> Self {
         Self {
@@ -52,6 +54,29 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // endregion:helpers
+
+    /// The very top level of any file
+    fn parse_program(&mut self) -> ast::Program {
+        let mut program = ast::Program::new();
+
+        while self.peek().is_some() {
+            program.statements.push(self.parse_statement());
+        }
+
+        program
+    }
+
+    /// Simply consumes an identifier 
+    fn consume_identifier(&mut self) -> String {
+        match self.advance() {
+            Some(Token::Identifier(s)) => s,
+            other => panic!("Expected an identifier, found {:?}", other),
+        }
+    }
+
+    // region:pratt parser
+
     /// This is how much priority each infix (and post/prefix) has.<br>
     /// For example, in `1 + 2 * 3`, even though `+` comes earlier, `*` has a higher priority and will be nested deeper in the AST.
     fn infix_binding_power(token: &Token) -> Option<(u8, u8)> {
@@ -65,28 +90,9 @@ impl<'a> Parser<'a> {
             Token::Exponent => Some((50, 51)),
             Token::ParenthesisOpen => Some((60, 61)),
             Token::SquareBracketOpen => Some((80, 81)), 
+            Token::Dot => Some((80, 81)), 
             _ => None,
         }
-    }
-
-    /// Simply consumes an identifier 
-    fn consume_identifier(&mut self) -> String {
-        match self.advance() {
-            Some(Token::Identifier(s)) => s,
-            other => panic!("Expected an identifier, found {:?}", other),
-        }
-    }
-
-    /// The very top level of any file
-    fn parse_program(&mut self) -> ast::Program {
-        let mut program = ast::Program::new();
-
-        while self.peek().is_some() {
-            // println!("{:?}", self.peek());
-            program.statements.push(self.parse_statement());
-        }
-
-        program
     }
 
     /// Wrapper for parse_expression_bp with a min binding power of 0
@@ -155,15 +161,15 @@ impl<'a> Parser<'a> {
             Some(Token::SquareBracketOpen) => {
                 let mut elements = Vec::new();
                 
-                // Keep parsing elements until we hit the closing bracket
+                // Keep parsing elements until the closing bracket
                 if self.peek() != Some(&Token::SquareBracketClose) {
                     loop {
                         elements.push(self.parse_expression());
                         
                         if self.check(&Token::Comma) {
-                            self.advance(); // Consume the comma and continue
+                            self.advance();
                         } else {
-                            break; // No comma means this should be the last element
+                            break;
                         }
                     }
                 }
@@ -177,15 +183,15 @@ impl<'a> Parser<'a> {
             Some(Token::CurlyBracketOpen) => {
                 let mut elements = Vec::new();
                 
-                // Keep parsing elements until we hit the closing bracket
+                // Keep parsing elements until the closing bracket
                 if self.peek() != Some(&Token::CurlyBracketClose) {
                     loop {
                         elements.push(self.parse_expression());
                         
                         if self.check(&Token::Comma) {
-                            self.advance(); // Consume the comma and continue
+                            self.advance();
                         } else {
-                            break; // No comma means this should be the last element
+                            break;
                         }
                     }
                 }
@@ -257,13 +263,24 @@ impl<'a> Parser<'a> {
                     self.consume(Token::SquareBracketClose)
                     .expect("Expected closing bracket ']' after accessing field");
                 
-                lhs = Expression::Field {
-                    object: Box::new(lhs),
-                    index: Box::new(index),
-                    computed: true
-                };
+                    lhs = Expression::Field {
+                        object: Box::new(lhs),
+                        index: Box::new(index),
+                        computed: true
+                    };
+                    
+                }
+                // Uncomputed field access (obj.field)
+                Token::Dot => {
+                    let field = self.consume_identifier();
                 
-            }
+                    lhs = Expression::Field {
+                        object: Box::new(lhs),
+                        index: Box::new(Expression::String(field)),
+                        computed: true
+                    };
+                    
+                }
             
             // Infixes
 
@@ -331,8 +348,9 @@ impl<'a> Parser<'a> {
         lhs
     }
 
-    fn parse_parameter(&mut self, params: &mut Vec<String>) {
+    // endregion:pratt parser
 
+    fn parse_parameter(&mut self, params: &mut Vec<String>) {
         match self.advance() {
             Some(Token::ParenthesisClose) => return,
             Some(Token::Identifier(name)) => params.push(name.to_string()),
@@ -391,16 +409,6 @@ impl<'a> Parser<'a> {
             Some(Token::If) => {
                 self.advance();
                 self.parse_if()
-            }
-            // Add guest languages
-            Some(Token::GuestBlock((lang, code))) => {
-                let language = lang.to_string();
-                let source_code = code.to_string();
-                self.advance();
-                Statement::GuestBlock {
-                    language,
-                    source_code,
-                }
             }
             // `var = ...` and `func()`
             Some(Token::Identifier(_)) => Statement::Expr(self.parse_expression()),

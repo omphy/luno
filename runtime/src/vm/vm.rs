@@ -203,7 +203,7 @@ impl Table {
 
     pub fn get(&self, index: Variable) -> Variable {
         match index {
-            Variable::Float(f) => {
+            Variable::Float(f) if f.fract() == 0.0 && f >= 0.0 => {
                 let idx = f as usize;
                 if idx < self.array.len() {
                     self.array[idx]
@@ -230,22 +230,30 @@ impl Table {
                     if idx > cap {
                         self.set_map(index, var);
                     } 
+                    // Resize the array if its at max capacity
                     else if idx == cap {
-                        // Increase capacity
                         self.array.reserve(1); 
                         self.array.resize(idx + 1, Variable::Nil);
                         self.array[idx] = var;
 
-                        println!("Array grew to {}! Time to fix the map.", self.array.capacity());
+                        self.map.remove(&index);
+
+                        for i in (cap + 1)..self.array.capacity() {
+                            if let Some(migrated) = self.map.remove(&Variable::Float(i as f64)) {
+                                if self.array.len() <= i {
+                                    self.array.resize(i + 1, Variable::Nil);
+                                }
+                                self.array[i] = migrated;
+                            }
+                        }
                     } 
+                    // Put it in the array
                     else {
                         if self.array.len() <= idx {
                             self.array.resize(idx + 1, Variable::Nil);
                         }
                         self.array[idx] = var;
                     }
-
-                    println!("set {idx} to {:?}", var);
                 } else {
                     // Negatives and decimals
                     self.set_map(index, var);
@@ -877,7 +885,7 @@ impl VM {
         worklist.extend(self.globals.values().copied());
         worklist.extend(self.call_stack.iter().copied());
 
-        // Not sure if this needs tM  o run on return values, but im concerned about a situation like:
+        // Not sure if this needs to run on return values, but im concerned about a situation like:
         // `var["a" .. "b"] = func()` where it might call the gc between RET and GET_RET.
         // Either way, this is basically free compared to the rest of the gc so preventing edge cases that may or may not exist is a better idea i think.
         worklist.extend(self.return_values.iter().copied());

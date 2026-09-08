@@ -1,6 +1,6 @@
 use logos::Logos;
 
-// EVERY token in the entire language
+// EVERY token in the entire language (warning, regex ahead!)
 #[derive(Logos, Debug, PartialEq)]
 #[logos(skip r"[ \t\n\r\f]+")]
 #[logos(skip(r"--[^\n]*", allow_greedy = true))]
@@ -77,10 +77,10 @@ pub enum Token {
     Number(f64),
     #[token("..")]
     Concat,
-    
+    #[token(".")]
+    Dot,
     #[regex(r#""([^"\\]|\\.)*""#, |lex| {
         let slice = lex.slice();
-        // Strip the leading and trailing double quotes
         let inner = &slice[1..slice.len() - 1];
         let mut unescaped = String::with_capacity(inner.len());
         let mut chars = inner.chars();
@@ -93,8 +93,8 @@ pub enum Token {
                     Some('r') => unescaped.push('\r'),
                     Some('\\') => unescaped.push('\\'),
                     Some('"') => unescaped.push('"'),
-                    Some(other) => unescaped.push(other), // Fallback for any other escaped char
-                    None => {} // Handle unexpected trailing backslash
+                    Some(other) => unescaped.push(other),
+                    None => {}
                 }
             } else {
                 unescaped.push(c);
@@ -103,15 +103,4 @@ pub enum Token {
         unescaped
     })]
     String(String),
-
-    #[regex(r"<\?[a-zA-Z_]+(?:[^?]+|\?[^>])*\?>", |lex| {
-        let slice = lex.slice();
-        let inner = &slice[2..slice.len()-2]; // Strip <? and ?>
-        let first_space = inner.find(|c: char| c.is_whitespace()).unwrap();
-
-        let lang = inner[..first_space].to_string();
-        let code = inner[first_space..].trim().to_string();
-        (lang, code)
-    })]
-    GuestBlock((String, String)),
 }

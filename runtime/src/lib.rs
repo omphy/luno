@@ -1,5 +1,4 @@
-// Setup modules
-// (not idiomatic i know but i prefer this)
+// theres this weird multi language compile bullshit from a very very very old version of the compiler that needs to get removed
 
 // Compiler
 pub mod compile {

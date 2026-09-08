@@ -1,31 +1,13 @@
-use luno_compiler::{Lua};
+use luno_compiler::Lua;
 use std::time::{Duration, Instant};
 
-// use runtime::{ir::IrInstruction::*, ir_generator::IRGenerator};
-
 fn main() {
-    // let mut genr = IRGenerator::new();
-    // let ir = vec![
-    //     Local(genr.intern("var1")),
-    //     Local(genr.intern("var2")),
-        
-    //     LoadFloat { dest: genr.intern("var1"), value: 5.0 },
-    //     LoadFloat { dest: genr.intern("var2"), value: 5.0 },
-    //     Add { dest: genr.intern("var1"), left: genr.intern("var1"), right: genr.intern("var2") }
-    // ];
-    // genr.compile(ir)
-    // .map(|val| val.disassemble("MainChunk"))
-    // .unwrap_or_else(|err| eprintln!("{err}"));
-        
     let mut lua = Lua::new();
-    let source = include_str!("./example.lua");
     
-    println!("--- Running Script: DEBUG ---");
-    
-    let context = lua.compile(source).expect("Failed to compile script!");
+    let context = lua.compile(include_str!("./example.lua")).expect("Failed to compile script!");
     context.chunk.disassemble("MainChunk");
 
-    println!("\n--- RUNTIME OUTPUT ---");
+    println!("\nRUNTIME OUTPUT");
     let runs = 1;
     let mut total_duration = Duration::ZERO;
 
@@ -39,5 +21,5 @@ fn main() {
     }
 
     let average_duration = total_duration / runs;
-    println!("Average execution took (over {} runs): {:?}", runs, average_duration);
+    println!("Average execution was {:?} over {} runs", average_duration, runs);
 }

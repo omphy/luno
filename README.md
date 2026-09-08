@@ -48,7 +48,4 @@ Currently, there is no crates.io page for either the compiler or runtime. More i
 ### Not planned
 * Be designed to run on microcontrollers or embedded systems. The runtime and compiler are intended as a scripting language for games or executables.
 * Having super fast compile times. While the goal is to keep compile times fast enough for the language to be compiled at runtime, it will probably not be as fast as Lua.
-* Be a safe sandboxed environment for untrusted code. While some sandboxing will be implemented the main core of the language is to provide as much developer control as possible, even if it conflicts with safety.
-
-## AI disclaimer
-Unfortunately I have to admit AI code was used, mainly in the parser since the parser is something I really didn't like working on. This isn't a huge problem since it works fine and I have read and understand the code. But I don't like the idea of leaving slop in my code so I will replace it with proper handwritten code when I get the motivation for it.
+* Be a completely focused on sandboxed execution like for example Luau is. Though ensuring untrusted scripts can still run safely if you set up the environment for it *is* planned.

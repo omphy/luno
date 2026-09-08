@@ -105,10 +105,10 @@ impl Compiler {
         Ok(())
     }
 
+    /// Compiles a statement
     fn compile_statement(&mut self, stat: Statement) -> Result<(), CompileError> {
         match stat {
             Declaration { name, initial_value, scope: _ } => {
-                // Declare the new local variable register
                 let dest_var = self.new_var(name);
                 
                 // If there is an initial value, evaluate it and copy into dest_var
@@ -118,6 +118,7 @@ impl Compiler {
                 }
             }
 
+            // Expression statements (function ...() end, func(), foo = bar)
             Expr(ex) => {
                 self.compile_expression(ex)?;
             }
@@ -133,7 +134,7 @@ impl Compiler {
                 // Pop the new scope
                 self.scopes.pop();
             }
-
+            
             If { condition, then_branch, else_branch } => {
                 let cond_reg = self.compile_expression(condition)?;
 
@@ -144,6 +145,7 @@ impl Compiler {
                 if let Some(else_stmt) = else_branch {
                     let end_label = self.new_label();
 
+                    // if the if was true, skip the else branch
                     self.instructions.push(Jump(end_label));
                     self.instructions.push(Label(else_label));
                     
@@ -253,13 +255,6 @@ impl Compiler {
                         let val_reg = self.compile_expression(*value)?;
                         let idx_reg = self.compile_expression(*index)?;
                         let obj_reg = self.compile_expression(*object)?;
-
-                        // let temp_index = self.new_temp();
-                        // let temp_const = self.new_temp();
-
-                        // Subtract one to get 1 indexed arrays
-                        // self.instructions.push(LoadFloat { dest: temp_const, value: 1.0 });
-                        // self.instructions.push(Binary { dest: temp_index, left: idx_reg, right: temp_const, op: Operator::Sub });
                         self.instructions.push(SetField { object: obj_reg, index: idx_reg, src: val_reg });
 
                         Ok(val_reg)
@@ -267,6 +262,8 @@ impl Compiler {
                     types => Err(CompileError::TypeError(format!("attempted to assign to {:?}", types))),
                 }
             }
+
+            // region:functions
 
             Expression::Call { callee, arguments } => {
                 // Compile the callee expression
@@ -318,17 +315,14 @@ impl Compiler {
                 Ok(fn_reg)
             }
 
+            // endregion:functions
+            // region:objects
             Expression::Field { object, index, computed: _ } => {
                 let temp = self.new_temp();
 
                 let obj = self.compile_expression(*object)?;
                 let idx = self.compile_expression(*index)?;
-                // let temp_index = self.new_temp();
-                // let temp_const = self.new_temp();
 
-                // // Subtract one to get 1 indexed arrays
-                // self.instructions.push(LoadFloat { dest: temp_const, value: 1.0 });
-                // self.instructions.push(Binary { dest: temp_index, left: idx, right: temp_const, op: Operator::Sub });
                 self.instructions.push(GetField { dest: temp, object: obj, index: idx });
                 Ok(temp)
             }
@@ -356,6 +350,8 @@ impl Compiler {
 
                 Ok(table)
             }
+
+            // endregion:objects
 
             exp => unimplemented!("expression {:#?}", exp),
         }

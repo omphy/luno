@@ -70,12 +70,16 @@ pub enum IrInstruction {
     Noop,
 }
 
+/// How the register is being used
 pub enum RegAccess {
-    Def, // The register is being written to
-    Use, // The register is being read from
+    /// The register is being written to
+    Def,
+    /// The register is being read from
+    Use,
 }
 
 impl IrInstruction {
+    /// Loop through each register in an instruction
     pub fn visit_registers_mut<F>(&mut self, mut f: F)
     where
         F: FnMut(&mut VirtualVar, RegAccess),
@@ -149,7 +153,6 @@ impl IrInstruction {
                     f(&mut VirtualVar(reg as usize), Use);
                 }
             }
-            // _ => {}
         }
     }
 }
