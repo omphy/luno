@@ -158,13 +158,19 @@ impl IrGenerator {
 
     pub fn compile(&mut self, mut instructions: Vec<IrInstruction>) -> Result<Chunk, CompileError> {
         instructions = self.pass_extend(instructions)?;
-        let mut highest = 0usize;
-        for instruction in &mut instructions {
-            instruction.visit_registers_mut(|reg, _access| {
-                if reg.0 > highest {highest = reg.0}
-            });
+        // let mut highest = 0usize;
+        // for instruction in &mut instructions {
+        //     instruction.visit_registers_mut(|reg, _access| {
+        //         if reg.0 > highest {highest = reg.0}
+        //     });
+        // }
+        // println!("highest register: {highest}");
+        
+        // Ensure that every function ends with RET to satisfy the VM
+        if !matches!(instructions.last(), Some(IrInstruction::Ret { .. })) {
+            instructions.push(IrInstruction::Ret { start: 0, offset: 0 });
         }
-        println!("highest register: {highest}");
+
         self.pass_emit_bytecode(instructions)
     }
 }

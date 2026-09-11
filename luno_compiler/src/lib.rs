@@ -4,7 +4,6 @@ mod parser;
 mod token;
 
 use runtime::errors::CompileError;
-// pub use runtime::vm_function;
 pub use runtime::rust_functions;
 pub use runtime::vm;
 
@@ -16,6 +15,17 @@ use runtime::{Runtime, Language, SharedContext, standard_lib};
 
 pub struct Lua;
 
+// test function
+pub fn callback_test(vm: &mut vm::VM) -> Result<(), runtime::errors::RuntimeError> {
+    let fn_var = vm.call_stack.first().copied().unwrap_or(Variable::Nil);
+
+    for i in 1..=10 {
+        vm.call(fn_var, &[Variable::Float(i as f64)])?;
+    }
+
+    Ok(())
+}
+
 impl Lua {
     pub fn add_library(runtime: &mut Runtime) {
         // Print stuff
@@ -23,9 +33,23 @@ impl Lua {
         
         // Coroutines
         let mut coroutine = Table::new();
-        let new = Variable::String(runtime.vm.intern_string("new"));
-        coroutine.set(new, Variable::Float(5.5));
+
+        // .create()
+        let create_function = runtime.vm.new_function(standard_lib::vm_co_create);
+        coroutine.set_field(&mut runtime.vm, "create", create_function);
+        
+        // .resume()
+        let resume_function = runtime.vm.new_function(standard_lib::vm_co_resume);
+        coroutine.set_field(&mut runtime.vm, "resume", resume_function);
+        
+        // .yield()
+        let yield_function = runtime.vm.new_function(standard_lib::vm_co_yield);
+        coroutine.set_field(&mut runtime.vm, "yield", yield_function);
+
         runtime.vm.set_global("coroutine", coroutine);
+
+        // test function
+        runtime.vm.set_global_function("for10", callback_test);
     }
 
     pub fn new() -> Runtime {

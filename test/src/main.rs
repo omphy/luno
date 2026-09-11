@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 fn main() {
     let mut lua = Lua::new();
     
-    let context = lua.compile(include_str!("./example.lua")).expect("Failed to compile script!");
+    let context = lua.compile(include_str!("./test.lua")).expect("failed to compile script");
     context.chunk.disassemble("MainChunk");
 
     println!("\nRUNTIME OUTPUT");

@@ -8,18 +8,13 @@ pub mod compile {
 }
 pub use compile::{bytecode, ir, ir_generator};
 
-// Rust function api
-pub mod function_api {
-    pub mod rust_functions;
-    pub mod standard_lib;
-}
-pub use function_api::{rust_functions, standard_lib};
-
 // Rust api
 pub mod api {
     pub mod globals;
+    pub mod rust_functions;
+    pub mod standard_lib;
 }
-pub use api::{globals};
+pub use api::{globals, rust_functions, standard_lib};
 
 // VM
 pub mod vm {

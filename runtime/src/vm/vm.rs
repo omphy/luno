@@ -34,6 +34,9 @@ pub enum Variable {
     /// Contains a pointer to a heap allocated string
     String(usize),
 
+    /// Contains a pointer to a heap allocated coroutine
+    Coroutine(usize),
+
     /// Represents nothing, also known as null and none
     Nil,
 }
@@ -70,8 +73,12 @@ impl Hash for Variable {
                 state.write_u8(5);
                 state.write_usize(i);
             }
-            Variable::Nil => {
+            Variable::Coroutine(i) => {
                 state.write_u8(6);
+                state.write_usize(i);
+            }
+            Variable::Nil => {
+                state.write_u8(7);
             }
         }
     }
@@ -107,6 +114,7 @@ impl Variable {
             Variable::String(_) => "string",
             Variable::Array(_) => "array",
             Variable::Table(_) => "table",
+            Variable::Coroutine(_) => "thread",
             Variable::Nil => "nil",
         }
     }
@@ -126,7 +134,7 @@ impl Variable {
     pub fn is_equal(&self, other: &Variable) -> bool {
         // This is a bit useless right now, this is because
         // its intended to prevent a rewrite if this ever does
-        // do something.
+        // do something. (e.g., string interning gets reworked)
 
         // Strings work because interning makes the pointers of 2 equal strings the same pointer.
         self == other
@@ -145,6 +153,8 @@ pub struct CallFrame {
     pub ip: usize,
     /// Where this function's registers start in the global register array
     pub register_base: usize, 
+    /// If this CallFrame was pushed from Rust
+    pub from_rust: bool,
 }
 
 /// Runtime array struct, automatically handles bounds checking and returns proper variables 
@@ -189,6 +199,21 @@ impl From<Vec<Variable>> for Array {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum CoroutineState {
+    Suspended,
+    Running,
+    Dead,
+}
+
+#[derive(Debug)]
+pub struct Coroutine {
+    pub registers: Vec<Variable>,
+    pub frames: Vec<CallFrame>,
+    pub state: CoroutineState,
+    pub caller: Option<usize>,
+}
+
 /// Runtime table struct
 #[derive(Default, Debug)]
 pub struct Table {
@@ -201,6 +226,7 @@ impl Table {
         Default::default()
     }
 
+    /// Get the variable stored at the index.
     pub fn get(&self, index: Variable) -> Variable {
         match index {
             Variable::Float(f) if f.fract() == 0.0 && f >= 0.0 => {
@@ -215,10 +241,18 @@ impl Table {
         }
     }
 
+    /// Sets a variable on the table, but forces it to be on the hashmap. This is **not** recommended for normal usage as it can easily cause memory leaks.
     pub fn set_map(&mut self, index: Variable, var: Variable) {
         self.map.insert(index, var);
     }
 
+    /// Sets the field to a variable.
+    pub fn set_field(&mut self, vm: &mut VM, field: &str, var: Variable) {
+        let idx = vm.new_string(field);
+        self.set(idx, var);
+    }
+
+    /// Sets a variable on the table at the desired index.
     pub fn set(&mut self, index: Variable, var: Variable) {
         match index {
             Variable::Float(f) => {
@@ -294,6 +328,13 @@ pub struct VM {
     /// Every allocated string
     pub strings: Slab<String>,
 
+    /// Every allocated coroutine
+    pub coroutines: Slab<Coroutine>,
+    /// The index of the currently executing coroutine
+    pub current_co: usize,
+    /// The depth of native calls
+    pub native_depth: usize,
+
     /// String storage used by the string interner
     /// TODO: Optimize/replace/remove this
     pub interned_strings: FxHashMap<String, usize>,
@@ -309,14 +350,43 @@ pub struct VM {
 impl VM {
     /// Creates a new VM with default values and JIT disabled.
     pub fn new() -> Self {
-        VM {
+        let mut vm = VM {
             debug: false,
             jit: false,
             ..Default::default()
-        }
+        };
+        
+        // Setup the Main Thread at index 0
+        let main_co = Coroutine {
+            registers: Vec::new(),
+            frames: Vec::new(),
+            state: CoroutineState::Running,
+            caller: None,
+        };
+        vm.current_co = vm.coroutines.insert(main_co);
+        
+        vm
     }
 
     // region:exec
+
+    /// Swaps the frames from the coroutine and the VM
+    pub fn swap_context(&mut self, target_co: usize) {
+        let current_id = self.current_co;
+        if current_id == target_co {
+            return;
+        }
+
+        // Store the active state into the outgoing coroutine
+        std::mem::swap(&mut self.registers, &mut self.coroutines[current_id].registers);
+        std::mem::swap(&mut self.frames, &mut self.coroutines[current_id].frames);
+
+        // Load the target coroutine's state into the VM
+        std::mem::swap(&mut self.registers, &mut self.coroutines[target_co].registers);
+        std::mem::swap(&mut self.frames, &mut self.coroutines[target_co].frames);
+
+        self.current_co = target_co;
+    }
 
     /// Execute a chunk on the VM.
     pub fn execute(&mut self, main_chunk: Chunk) -> Result<(), RuntimeError> {
@@ -328,6 +398,7 @@ impl VM {
             func_idx: main_idx,
             ip: 0,
             register_base: 0, // Starts at register 0
+            from_rust: true,
         });
 
         self.run()
@@ -335,35 +406,26 @@ impl VM {
 
     /// Start executing from a main function index
     pub fn run(&mut self) -> Result<(), RuntimeError> { 
-        // Outer loop: Grab the top frame
+        // Grab top frame
         loop {
-            // COPY the frame into a local variable for fast IP manipulation, 
-            // but LEAVE it on the stack so `get_register` can still read `register_base`.
             let mut frame = match self.frames.last().copied() {
                 Some(f) => f,
-                None => break, // No more frames, VM is done!
+                None => break,
             };
 
             let current_func_idx = frame.func_idx;
 
-            // Inner loop: Execute instructions for THIS frame
+            // Execute instructions for this frame
             loop {
-                // Fetch instruction locally!
                 let instruction = {
                     let chunk = match self.functions.get(current_func_idx) {
                         Some(c) => c,
                         _ => return Err(RuntimeError::InternalError("Invalid frame func_idx".to_string())),
                     };
                     
-                    if frame.ip >= chunk.code.len() {
-                        let popped = self.frames.pop().unwrap();
-                        self.registers.truncate(popped.register_base);
-                        break;
-                    }
                     chunk.code[frame.ip]
                 };
                 
-                // Fast local IP increment!
                 frame.ip += 1;
                 
                 let opcode_byte = (instruction >> 24) as u8;
@@ -600,34 +662,24 @@ impl VM {
                         let start = (instruction >> 8) as u8;
                         let arg_count = instruction as u8;
 
-                        let func_idx = self.get_function_index(target)?;
-                        let is_rust = self.functions.get(func_idx).map_or(false, |c| c.rust_function.is_some());
+                        // Save the current IP for returning
                         self.frames.last_mut().unwrap().ip = frame.ip;
 
-                        if is_rust {
-                            self.call_stack.clear();
-                            for reg in (start as u16)..(start as u16 + arg_count as u16) {
-                                self.call_stack.push(self.get_register(reg as u8));
-                            }
-                            
-                            self.call(func_idx)?; 
-                            
-                            frame = *self.frames.last().unwrap();
+                        // Grab the function to execute
+                        let func_var = self.get_register(target);
+
+                        // Collect arguments
+                        let mut args = Vec::with_capacity(arg_count as usize);
+                        for i in 0..arg_count {
+                            let arg_reg = (start as u16 + i as u16) as u8;
+                            args.push(self.get_register(arg_reg));
+                        }
+
+                        let context_changed = self.call(func_var, &args)?;
+                        if context_changed {
+                            break;
                         } else {
-                            let new_base = self.registers.len();
-                            
-                            for i in 0..arg_count {
-                                let arg_reg = (start as u16 + i as u16) as u8;
-                                let arg_var = self.get_register(arg_reg);
-                                self.registers.push(arg_var);
-                            }
-                            
-                            self.frames.push(CallFrame {
-                                func_idx,
-                                ip: 0,
-                                register_base: new_base,
-                            });
-                            break; // Break inner loop to fetch the new frame
+                            frame = *self.frames.last().unwrap();
                         }
                     }
 
@@ -640,11 +692,21 @@ impl VM {
                             self.return_values.push(self.get_register(start + i));
                         }
 
-                        // Explicitly pop the active frame now that it is finished returning
                         let popped = self.frames.pop().unwrap();
                         self.registers.truncate(popped.register_base);
 
-                        break; // Break inner loop to reload the caller's frame locally
+                        if self.frames.is_empty() {
+                            if self.current_co != 0 {
+                                let caller = self.coroutines[self.current_co].caller.unwrap_or(0);
+                                self.coroutines[self.current_co].state = CoroutineState::Dead;
+                                self.swap_context(caller);
+                                break;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
                     }
 
                     GET_RET => {
@@ -847,10 +909,21 @@ impl VM {
         Ok(())
     }
 
-    // TODO: make this not redundant
-    fn call(&mut self, func_idx: usize) -> Result<(), RuntimeError> {
-        let chunk = match self.functions.get(func_idx) {
-            Some(c) => c,
+    /// Calls a function and passes the given arguments.
+    /// 
+    /// Returns `true` if the VM context was modified (e.g., a new frame was pushed or a coroutine swapped)
+    /// which signals that the execution loop needs to yield/restart its context.
+    pub fn call(&mut self, func: Variable, args: &[Variable]) -> Result<bool, RuntimeError> {
+        // Validate that the variable is actually a function
+        let func_idx = match func {
+            Variable::Function(idx) => idx,
+            _ => return Err(RuntimeError::TypeError(
+                format!("attempt to call a {} value", func.type_name())
+            )),
+        };
+
+        let rust_func = match self.functions.get(func_idx) {
+            Some(c) => c.rust_function,
             None => {
                 return Err(RuntimeError::InternalError(
                     format!("Invalid function handle {func_idx}")
@@ -858,14 +931,37 @@ impl VM {
             }
         };
 
-        match chunk.rust_function {
-            Some(func) => {
-                func(self)?;
-            }
-            None => {}
-        }
+        let prev_co = self.current_co;
+        let prev_frames = self.frames.len();
 
-        Ok(())
+        if let Some(func) = rust_func {
+            self.call_stack.clear();
+            self.call_stack.extend_from_slice(args);
+            
+            // Execute the Rust function directly
+            self.native_depth += 1;
+            let result = func(self);
+            self.native_depth -= 1;
+            result?;
+            
+            // Returns true if the rust function triggered a coroutine swap or pushed a bytecode frame
+            Ok(self.current_co != prev_co || self.frames.len() != prev_frames)
+        } else {
+            let new_base = self.registers.len();
+            self.registers.extend_from_slice(args);
+            
+            self.frames.push(CallFrame {
+                func_idx,
+                ip: 0,
+                register_base: new_base,
+                from_rust: true,
+            });
+
+            self.run()?;
+            
+            // Always returns true because lua definitely pushed a new frame onto the stack
+            Ok(true) 
+        }
     }
 
     // endregion:exec

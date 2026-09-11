@@ -6,6 +6,7 @@ pub enum RuntimeError {
     TypeError(String),
     InternalError(String),
     ConversionError(String),
+    ThreadError(String),
 }
 
 impl fmt::Display for RuntimeError {
@@ -15,6 +16,7 @@ impl fmt::Display for RuntimeError {
             RuntimeError::TypeError(msg) => write!(f, "Type Error: {}", msg),
             RuntimeError::InternalError(msg) => write!(f, "Internal Error: {}", msg),
             RuntimeError::ConversionError(msg) => write!(f, "Conversion Error: {}", msg),
+            RuntimeError::ThreadError(msg) => write!(f, "Thread Error: {}", msg),
         }
     }
 }
