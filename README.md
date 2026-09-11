@@ -2,16 +2,6 @@
 
 `luno` is an experimental compiler and runtime, aiming to run a Lua 5.1 dialect language fully implemented in pure Rust. The main goal of the project is to provide a Lua-like runtime that has absolutely no external language dependencies.
 
-## Stability
-Currently the API *and* written code is completely unstable and can change at any time. While normal Lua code should be mostly stable, custom features like the `global` keyword and `[1, 2, 3]` arrays could be changed or removed entirely if weird edge cases are found with the current implementation or if it's decided that the feature is completely unecessary.
-Additionally code is prone to crashing and there are lots of other issues and unfinished features that still need to be ironed out.
-
-Therefore it is currently **strongly not** recommended to be used in any production programs.
-
-## Safety
-Almost all of the code is written in fully safe Rust as safe code is the priority. However if unsafe code can provide a speed up or help with other features it could still be used.
-But unlike other code, most of the experimental JIT related code is inherently almost fully unsafe Rust. 
-
 ## Usage
 ### Running code
 Running code is very straightforward. You create a new Lua runtime and you can simply call `execute` on it with the inputted code.
@@ -26,10 +16,38 @@ if let Err(error) = lua.execute(include_str!("./example.lua")) {
     println!("{error}");
 }
 ```
+### Stability
+Currently the API *and* written code is completely unstable and can change at any time. While normal Lua code should be mostly stable, custom features like the `global` keyword and `[1, 2, 3]` arrays could be changed or removed entirely if weird edge cases are found with the current implementation or if it's decided that the feature is completely unecessary.
+Additionally code is prone to crashing and there are lots of other issues and unfinished features that still need to be ironed out.
+
+Therefore it is currently **strongly not** recommended to be used in any production programs.
+
 ### Installation
 Currently, there is no crates.io page for either the compiler or runtime. More information will be included later.
 
-## Goals
+### Safety
+Almost all of the code is written in fully safe Rust as safe code is the priority. However if unsafe code can provide a speed up or help with other features it could still be used.
+But unlike other code, most of the experimental JIT related code is inherently almost fully unsafe Rust. 
+
+## Features
+### Implemented
+* The standard library features `print`, `coroutine.yield`, `coroutine.resume` and `coroutine.create`.
+* Function creation and function calling.
+* Global variables (note that currently _G does not exist).
+* `if`, `while` and `do` blocks are all fully implemented.
+* Simple Rust API for interacting with the VM.
+* Coroutine support.
+
+### Unimplemented
+* A garbage collector.
+* Upvalue support.
+* The standard library (apart from the above mentioned parts).
+* `for` loops and `goto`.
+* Suport for varargs (`...`).
+* Usable error messages.
+* Metatables and metamethods
+
+## Additional Goals
 ### Planned
 * Have a runtime speed comparable, if not better than PUC-Rio Lua. Or at the very least not being dreadfully slow.
 * Providing an easy to use Rust API.
