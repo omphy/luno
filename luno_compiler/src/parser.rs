@@ -1,5 +1,5 @@
 use crate::ast::{self, Expression, Statement};
-use crate::token::{*, Token::*};
+use crate::token::*;
 use std::string::String;
 use logos::Logos;
 
@@ -81,7 +81,6 @@ impl<'a> Parser<'a> {
     /// For example, in `1 + 2 * 3`, even though `+` comes earlier, `*` has a higher priority and will be nested deeper in the AST.
     fn infix_binding_power(token: &Token) -> Option<(u8, u8)> {
         match token {
-            Token::Assign => Some((10, 9)),
             Token::Equal | Token::NotEqual => Some((16, 17)),
             Token::Less | Token::LessEq | Token::More | Token::MoreEq => Some((20, 21)),
             Token::Concat => Some((25, 26)),
@@ -90,7 +89,7 @@ impl<'a> Parser<'a> {
             Token::Exponent => Some((50, 51)),
             Token::ParenthesisOpen => Some((60, 61)),
             Token::SquareBracketOpen => Some((80, 81)), 
-            Token::Dot => Some((80, 81)), 
+            Token::Dot | Token::Colon => Some((80, 81)),
             _ => None,
         }
     }
@@ -122,37 +121,25 @@ impl<'a> Parser<'a> {
             Some(Token::ParenthesisOpen) => {
                 // Parse the inner expression with 0 binding power to consume everything until the closing parenthesis no matter what
                 let expr = self.parse_expression_bp(0);
-                let _ = self
+                self
                     .consume(Token::ParenthesisClose)
                     .expect("Expected closing parenthesis");
                 expr
             }
             // Inline function declaration (function() end)
             Some(Token::Function) => {
-                // If there is a name, give it one
-                let name = match self.peek() {
-                    Some(Token::Identifier(_)) => {
-                        if let Some(Token::Identifier(name)) = self.advance() {
-                            Some(name)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-
                 let mut params = Vec::new();
 
-                let _ = self.consume(Token::ParenthesisOpen);
+                self.consume(Token::ParenthesisOpen).expect("Expected '(' after 'function'");
                 // Parse all the parameters
                 self.parse_parameter(&mut params);
-                let _ = self.consume(Token::ParenthesisClose);
+                self.consume(Token::ParenthesisClose).expect("Expected ')' after parameters");
 
                 // Parse code in the function
                 let body = self.parse_block();
 
                 Expression::FunctionDecl {
-                    name,
+                    name: None,
                     params,
                     body: Box::new(body),
                 }
@@ -281,24 +268,36 @@ impl<'a> Parser<'a> {
                     };
                     
                 }
-            
-            // Infixes
-
-            // Assignments
-            Token::Assign => {
-                let rhs = self.parse_expression_bp(right_bp);
-
-                // Ensure we are only assigning to valid targets (variables or fields)
-                match lhs {
-                    Expression::Variable(_) | Expression::Field { .. } => {
-                        lhs = Expression::Assignment {
-                            target: Box::new(lhs),
-                            value: Box::new(rhs),
+                // Method call (obj:method(args))
+                Token::Colon => {
+                    let method_name = self.consume_identifier();
+                    
+                    self.consume(Token::ParenthesisOpen)
+                        .expect("Expected opening parenthesis '(' for method call");
+                    
+                    let mut arguments = Vec::new();
+                    if self.peek() != Some(&Token::ParenthesisClose) {
+                        loop {
+                            arguments.push(self.parse_expression());
+                            if self.check(&Token::Comma) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
                         }
                     }
-                    _ => panic!("Invalid assignment target! Can only assign to variables or fields."),
+                    
+                    self.consume(Token::ParenthesisClose)
+                        .expect("Expected closing parenthesis ')' after method arguments");
+                
+                    lhs = Expression::MethodCall {
+                        object: Box::new(lhs),
+                        method_name,
+                        arguments,
+                    };
                 }
-            }
+            
+            // Infixes
 
             // Concat
             Token::Concat => {
@@ -351,22 +350,23 @@ impl<'a> Parser<'a> {
     // endregion:pratt parser
 
     fn parse_parameter(&mut self, params: &mut Vec<String>) {
-        match self.advance() {
-            Some(Token::ParenthesisClose) => return,
-            Some(Token::Identifier(name)) => params.push(name.to_string()),
-            Some(token) => panic!("Error parsing parameters! Unknown token: {token:?}"),
-            None => panic!("Error parsing parameters! No token found")
-        };
+        if self.peek() == Some(&Token::ParenthesisClose) {
+            return; // exit immediately if its just ()
+        }
 
-        match self.peek() {
-            Some(Token::ParenthesisClose) => return,
-            Some(Token::Comma) => {
+        loop {
+            match self.advance() {
+                Some(Token::Identifier(name)) => params.push(name),
+                Some(token) => panic!("Error parsing parameters! Expected identifier, found: {token:?}"),
+                None => panic!("Error parsing parameters! Unexpected end of file")
+            };
+
+            if self.check(&Token::Comma) {
                 self.advance();
-                self.parse_parameter(params);
-            },
-            Some(token) => panic!("Error parsing parameters! Unknown token: {token:?}"),
-            None => panic!("Error parsing parameters! No token found")
-        };
+            } else {
+                break;
+            }
+        }
     }
 
     fn parse_statement(&mut self) -> Statement {
@@ -374,21 +374,117 @@ impl<'a> Parser<'a> {
 
         match token {
             // Function declaration
-            Some(Token::Function) => Statement::Expr(self.parse_expression()),
+            Some(Token::Function) => {
+                self.advance(); // consume 'function'
+                
+                // Parse table.field:func()
+                let mut target = Expression::Variable(self.consume_identifier());
+                let mut is_method = false;
+
+                // nested table fields like table.subtable.func
+                while self.check(&Token::Dot) {
+                    self.advance();
+                    let field = self.consume_identifier();
+                    target = Expression::Field {
+                        object: Box::new(target),
+                        index: Box::new(Expression::String(field)),
+                        computed: true,
+                    };
+                }
+
+                // method definitions
+                if self.check(&Token::Colon) {
+                    self.advance();
+                    let method = self.consume_identifier();
+                    target = Expression::Field {
+                        object: Box::new(target),
+                        index: Box::new(Expression::String(method)),
+                        computed: true,
+                    };
+                    is_method = true; // :
+                }
+
+                let mut params = Vec::new();
+                self.consume(Token::ParenthesisOpen).expect("Expected '(' after function name");
+                
+                if is_method {
+                    // add self as first param
+                    params.push("self".to_string());
+                }
+
+                self.parse_parameter(&mut params);
+                self.consume(Token::ParenthesisClose).expect("Expected ')' after parameters");
+
+                let body = self.parse_block();
+
+                Statement::Assignment {
+                    targets: vec![target],
+                    values: vec![Expression::FunctionDecl {
+                        name: None,
+                        params,
+                        body: Box::new(body),
+                    }],
+                }
+            }
 
             // Return
             Some(Token::Return) => {
-                self.advance();
-                let return_value = self.parse_expression();
+                self.advance(); // consume return
+                
+                let mut return_values = Vec::new();
+                
+                // Check if the return is empty
+                let is_end_of_block = match self.peek() {
+                    Some(Token::End | Token::Else | Token::ElseIf) | None => true,
+                    _ => false,
+                };
+
+                // If there are values to return parse them
+                if !is_end_of_block {
+                    loop {
+                        return_values.push(self.parse_expression());
+                        
+                        if self.check(&Token::Comma) {
+                            self.advance(); // consume ,
+                        } else {
+                            break;
+                        }
+                    }
+                }
                 
                 Statement::Return {
-                    return_values: vec![return_value]
+                    return_values
                 }
             }
             // Local variable declaration
             Some(Token::Local) => {
                 self.advance();
-                self.parse_declaration(ast::Scope::Local)
+
+                // local func
+                if self.check(&Token::Function) {
+                    self.advance(); // consume 'function'
+                    let name = self.consume_identifier();
+                    
+                    let mut params = Vec::new();
+                    self.consume(Token::ParenthesisOpen).expect("Expected '('");
+                    self.parse_parameter(&mut params);
+                    self.consume(Token::ParenthesisClose).expect("Expected ')'");
+
+                    let body = self.parse_block();
+
+                    Statement::Declaration {
+                        names: vec![name.clone()],
+                        initial_values: vec![Expression::FunctionDecl {
+                            name: Some(name),
+                            params,
+                            body: Box::new(body),
+                        }],
+                        scope: ast::Scope::Local,
+                    }
+                } else {
+                    // local var
+                    self.parse_declaration(ast::Scope::Local)
+                }
             }
             // Global variable declaration
             Some(Token::Global) => {
@@ -410,30 +506,64 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.parse_if()
             }
+
             // `var = ...` and `func()`
-            Some(Token::Identifier(_)) => Statement::Expr(self.parse_expression()),
-            other => panic!("Unexpected token {:?}", other),
+            _ => {
+                let mut targets = vec![self.parse_expression()];
+
+                while self.check(&Token::Comma) {
+                    self.advance();
+                    targets.push(self.parse_expression());
+                }
+
+                if self.check(&Token::Assign) {
+                    self.advance();
+                    let mut values = vec![self.parse_expression()];
+                    
+                    while self.check(&Token::Comma) {
+                        self.advance();
+                        values.push(self.parse_expression());
+                    }
+                    Statement::Assignment { targets, values }
+                } else {
+                    if targets.len() > 1 {
+                        panic!("Unexpected ',' - multiple expressions are only allowed in assignments");
+                    }
+                    Statement::Expr(targets.pop().unwrap())
+                }
+            }
         }
     }
 
     // local/global
     fn parse_declaration(&mut self, scope: ast::Scope) -> Statement {
-        let name = self.consume_identifier();
+        let mut names = Vec::new();
+        loop {
+            names.push(self.consume_identifier());
+            if self.check(&Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
 
-        // Default to none
-        let mut initial_value = None;
+        let mut initial_values = Vec::new();
         
-        // Check if the next token is `=`, so you can either do `local var` or `local var = val` 
-        if let Some(token) = self.peek() {
-            if *token == Assign {
-                self.advance(); // Consumes the '=' token now that we know it's there
-                initial_value = Some(self.parse_expression());
+        if self.check(&Token::Assign) {
+            self.advance(); // Consumes '='
+            loop {
+                initial_values.push(self.parse_expression());
+                if self.check(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
             }
         }
 
         Statement::Declaration {
-            name,
-            initial_value,
+            names,
+            initial_values,
             scope,
         }
     }

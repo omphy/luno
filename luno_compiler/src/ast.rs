@@ -19,9 +19,13 @@ impl Program {
 pub enum Statement {
     Expr(Expression),
     Declaration {
-        name: String,
-        initial_value: Option<Expression>,
+        names: Vec<String>,
+        initial_values: Vec<Expression>,
         scope: Scope,
+    },
+    Assignment {
+        targets: Vec<Expression>,
+        values: Vec<Expression>,
     },
     BlockScope {
         statements: Vec<Statement>,
@@ -61,10 +65,6 @@ pub enum Expression {
     Nil,
     Array(Vec<Expression>),
     Table(Vec<Expression>),
-    Assignment {
-        target: Box<Expression>,
-        value: Box<Expression>,
-    },
     Binary {
         left: Box<Expression>,
         operator: String,
@@ -87,5 +87,13 @@ pub enum Expression {
     Unary {
         operator: String,
         right: Box<Expression>,
+    },
+
+    // this is for foo:bar(), the reason this is seperate from `Call` is because
+    // while foo:bar() becoming foo:bar(foo) is correct, foo():bar() becoming foo():bar(foo()) is not
+    MethodCall { 
+        object: Box<Expression>, 
+        method_name: String, 
+        arguments: Vec<Expression> 
     },
 }

@@ -108,13 +108,88 @@ impl Compiler {
     /// Compiles a statement
     fn compile_statement(&mut self, stat: Statement) -> Result<(), CompileError> {
         match stat {
-            Declaration { name, initial_value, scope: _ } => {
-                let dest_var = self.new_var(name);
+            Declaration { names, initial_values, scope: _ } => {
+                if initial_values.is_empty() {
+                    for name in names {
+                        self.new_var(name);
+                    }
+                    return Ok(());
+                }
+
+                let mut compiled_rhs = Vec::new();
                 
-                // If there is an initial value, evaluate it and copy into dest_var
-                if let Some(val) = initial_value {
-                    let val_reg = self.compile_expression(val)?;
-                    self.instructions.push(Copy { dest: dest_var, src: val_reg });
+                let last_is_call = match initial_values.last() {
+                    Some(Expression::Call { .. }) | Some(Expression::MethodCall { .. }) => true,
+                    _ => false,
+                };
+
+                for val in initial_values {
+                    compiled_rhs.push(self.compile_expression(val)?);
+                }
+
+                let diff = names.len().saturating_sub(compiled_rhs.len());
+                
+                if last_is_call && diff > 0 {
+                    for i in 1..=diff {
+                        let dest = self.new_temp();
+                        self.instructions.push(GetReturn { dest, index: i as _ });
+                        compiled_rhs.push(dest);
+                    }
+                } else {
+                    for _ in 0..diff {
+                        let dest = self.new_temp();
+                        self.instructions.push(LoadNil(dest));
+                        compiled_rhs.push(dest);
+                    }
+                }
+
+                for (i, name) in names.into_iter().enumerate() {
+                    let dest_var = self.new_var(name);
+                    self.instructions.push(Copy { dest: dest_var, src: compiled_rhs[i] });
+                }
+            }
+
+            Assignment { targets, values } => {
+                let mut compiled_rhs = Vec::new();
+
+                let last_is_call = match values.last() {
+                    Some(Expression::Call { .. }) | Some(Expression::MethodCall { .. }) => true,
+                    _ => false,
+                };
+
+                for val in values {
+                    compiled_rhs.push(self.compile_expression(val)?);
+                }
+
+                let diff = targets.len().saturating_sub(compiled_rhs.len());
+                
+                if last_is_call && diff > 0 {
+                    for i in 1..=diff {
+                        let dest = self.new_temp();
+                        self.instructions.push(GetReturn { dest, index: i as _ });
+                        compiled_rhs.push(dest);
+                    }
+                } else {
+                    for _ in 0..diff {
+                        let dest = self.new_temp();
+                        self.instructions.push(LoadNil(dest));
+                        compiled_rhs.push(dest);
+                    }
+                }
+
+                for (i, target) in targets.into_iter().enumerate() {
+                    let val_reg = compiled_rhs[i];
+                    match target {
+                        Expression::Variable(name) => {
+                            self.set_variable(name, val_reg);
+                        }
+                        Expression::Field { object, index, computed: _ } => {
+                            let obj_reg = self.compile_expression(*object)?;
+                            let idx_reg = self.compile_expression(*index)?;
+                            self.instructions.push(SetField { object: obj_reg, index: idx_reg, src: val_reg });
+                        }
+                        _ => return Err(CompileError::TypeError(format!("attempted to assign to invalid target"))),
+                    }
                 }
             }
 
@@ -171,13 +246,27 @@ impl Compiler {
                 self.instructions.push(Label(end_label));
             }
 
-            Statement::Return { return_values } => {
-                let mut compiled_expressions = Vec::with_capacity(return_values.len());
-                for val in return_values {
-                    compiled_expressions.push(self.compile_expression(val)?);
+            Statement::Return { mut return_values } => {
+                let mut compiled_expressions = Vec::new();
+                let mut expand_last = false;
+
+                if let Some(last_expr) = return_values.pop() {
+                    for val in return_values {
+                        compiled_expressions.push(self.compile_expression(val)?);
+                    }
+
+                    match last_expr {
+                        Expression::Call { .. } | Expression::MethodCall { .. } => {
+                            self.compile_invocation(last_expr, false)?;
+                            expand_last = true;
+                        }
+                        _ => {
+                            compiled_expressions.push(self.compile_expression(last_expr)?);
+                        }
+                    }
                 }
 
-                self.instructions.push(Return(compiled_expressions));
+                self.instructions.push(IrInstruction::Return { values: compiled_expressions, multret: expand_last });
             }
 
             s => panic!("no support for '{:?}'", s),
@@ -242,55 +331,10 @@ impl Compiler {
                 Ok(dest)
             }
 
-            // Handles assigment
-            // TODO: disallow it as a generic expression (print(a = b)) 
-            Expression::Assignment { target, value } => {
-                match *target {
-                    Expression::Variable(name) => {
-                        let val_reg = self.compile_expression(*value)?;
-                        self.set_variable(name, val_reg);
-                        Ok(val_reg)
-                    }
-                    Expression::Field { object, index, computed: _ } => {
-                        let val_reg = self.compile_expression(*value)?;
-                        let idx_reg = self.compile_expression(*index)?;
-                        let obj_reg = self.compile_expression(*object)?;
-                        self.instructions.push(SetField { object: obj_reg, index: idx_reg, src: val_reg });
-
-                        Ok(val_reg)
-                    }
-                    types => Err(CompileError::TypeError(format!("attempted to assign to {:?}", types))),
-                }
-            }
-
             // region:functions
 
-            Expression::Call { callee, arguments } => {
-                // Compile the callee expression
-                let callee_reg = self.compile_expression(*callee)?;
-                
-                // Evaluate all arguments first
-                let mut eval_arg_regs = Vec::new();
-                for arg in arguments {
-                    eval_arg_regs.push(self.compile_expression(arg)?);
-                }
-
-                // Now that all arguments are fully evaluated, allocate a contiguous block of temporary registers
-                let mut contiguous_args = Vec::new();
-                for arg_reg in eval_arg_regs {
-                    let temp = self.new_temp();
-                    
-                    self.instructions.push(Copy { dest: temp, src: arg_reg });
-                    contiguous_args.push(temp);
-                }
-
-                // Emit the Call instruction
-                self.instructions.push(Call { callee: callee_reg, args: contiguous_args });
-
-                // Handle the return value
-                let dest = self.new_temp();
-                self.instructions.push(GetReturn { dest, index: 0 });
-                Ok(dest)
+            Expression::Call { .. } | Expression::MethodCall { .. } => {
+                self.compile_invocation(expr, true)
             }
 
             Expression::FunctionDecl { name, params, body } => {
@@ -353,14 +397,119 @@ impl Compiler {
 
             // endregion:objects
 
-            exp => unimplemented!("expression {:#?}", exp),
+            Expression::Unary { operator, right } => {
+                match operator.as_str() {
+                    "-" => {
+                        let zero = self.new_temp();
+                        self.instructions.push(LoadFloat { dest: zero, value: 0. });
+                        
+                        let val = self.compile_expression(*right)?;
+
+                        let new = self.new_temp();
+                        self.instructions.push(Binary { dest: new, left: zero, right: val, op: Operator::Sub } );
+
+                        Ok(new)
+                    }
+                    exp => unimplemented!("expression {:?}", exp),
+                }
+            }
+
+            // exp => unimplemented!("expression {:#?}", exp),
+        }
+    }
+
+    fn compile_invocation(&mut self, expr: Expression, truncate: bool) -> Result<VirtualVar, CompileError> {
+        // ultra effecient code
+        match expr {
+            Expression::Call { callee, mut arguments } => {
+                let callee_reg = self.compile_expression(*callee)?;
+                let mut eval_arg_regs = Vec::new();
+                let mut expand_last = false;
+
+                if let Some(last_expr) = arguments.pop() {
+                    for arg in arguments {
+                        eval_arg_regs.push(self.compile_expression(arg)?);
+                    }
+                    match last_expr {
+                        Expression::Call { .. } | Expression::MethodCall { .. } => {
+                            self.compile_invocation(last_expr, false)?;
+                            expand_last = true;
+                        }
+                        _ => {
+                            eval_arg_regs.push(self.compile_expression(last_expr)?);
+                        }
+                    }
+                }
+
+                let mut contiguous_args = Vec::new();
+                for arg_reg in eval_arg_regs {
+                    let temp = self.new_temp();
+                    self.instructions.push(Copy { dest: temp, src: arg_reg });
+                    contiguous_args.push(temp);
+                }
+
+                self.instructions.push(Call { callee: callee_reg, args: contiguous_args, multret: expand_last });
+
+                let dest = self.new_temp();
+                if truncate {
+                    self.instructions.push(GetReturn { dest, index: 0 });
+                }
+                Ok(dest)
+            }
+            Expression::MethodCall { object, method_name, mut arguments } => {
+                let obj_reg = self.compile_expression(*object)?;
+
+                let method_str_reg = self.new_temp();
+                self.instructions.push(LoadString { dest: method_str_reg, value: method_name });
+
+                let callee_reg = self.new_temp();
+                self.instructions.push(GetField { dest: callee_reg, object: obj_reg, index: method_str_reg });
+
+                let mut eval_arg_regs = Vec::new();
+                let mut expand_last = false;
+
+                if let Some(last_expr) = arguments.pop() {
+                    for arg in arguments {
+                        eval_arg_regs.push(self.compile_expression(arg)?);
+                    }
+                    match last_expr {
+                        Expression::Call { .. } | Expression::MethodCall { .. } => {
+                            self.compile_invocation(last_expr, false)?;
+                            expand_last = true;
+                        }
+                        _ => {
+                            eval_arg_regs.push(self.compile_expression(last_expr)?);
+                        }
+                    }
+                }
+
+                let mut contiguous_args = Vec::new();
+                let self_temp = self.new_temp();
+                self.instructions.push(Copy { dest: self_temp, src: obj_reg });
+                contiguous_args.push(self_temp);
+
+                for arg_reg in eval_arg_regs {
+                    let temp = self.new_temp();
+                    self.instructions.push(Copy { dest: temp, src: arg_reg });
+                    contiguous_args.push(temp);
+                }
+
+                self.instructions.push(Call { callee: callee_reg, args: contiguous_args, multret: expand_last });
+
+                let dest = self.new_temp();
+                if truncate {
+                    self.instructions.push(GetReturn { dest, index: 0 });
+                }
+                Ok(dest)
+            }
+            _ => unreachable!(),
         }
     }
 
     /// Compiles a program to IR and then to bytecode
     pub fn compile(&mut self, ast: Program) -> Result<Chunk, CompileError> {
         self.compile_program(ast)?;
-        println!("{:#?}", self.instructions);
+        // println!("{:#?}", self.instructions);
         let mut chunk = self.ir_generator.compile(std::mem::take(&mut self.instructions))?;
         chunk.array_indexing = 1;
         Ok(chunk)

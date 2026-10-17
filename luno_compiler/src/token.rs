@@ -79,6 +79,8 @@ pub enum Token {
     Concat,
     #[token(".")]
     Dot,
+    #[token(":")]
+    Colon,
     #[regex(r#""([^"\\]|\\.)*""#, |lex| {
         let slice = lex.slice();
         let inner = &slice[1..slice.len() - 1];

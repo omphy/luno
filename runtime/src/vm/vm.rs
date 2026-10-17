@@ -6,11 +6,19 @@ use rustc_hash::FxHashMap;
 use slab::Slab;
 use crate::*;
 
+// TODO: add metatables for non-table objects
+// TODO: light userdata types
 // CONSIDER: make the error text equal to lua's errors, this might not be done because I want to have better errors, even if it breaks compat with anything that reads the errors
 
 /// Instruction layout (32-bit):
 /// - 3-register format: [ 8-bit Opcode | 8-bit Target (A) | 8-bit Arg (B) | 8-bit Arg (C) ]
 /// - Immediate format:  [ 8-bit Opcode | 8-bit Target (A) | 16-bit Constant Index (BC)   ]
+
+#[allow(nonstandard_style)]
+const __index: usize = 0;
+
+// Update this when adding more metamethods
+const METAMETHOD_COUNT: usize = 1;
 
 /// Base variable type
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -36,6 +44,9 @@ pub enum Variable {
 
     /// Contains a pointer to a heap allocated coroutine
     Coroutine(usize),
+
+    /// Contains a pointer to a heap allocated userdata
+    Userdata(usize),
 
     /// Represents nothing, also known as null and none
     Nil,
@@ -77,8 +88,12 @@ impl Hash for Variable {
                 state.write_u8(6);
                 state.write_usize(i);
             }
-            Variable::Nil => {
+            Variable::Userdata(i) => {
                 state.write_u8(7);
+                state.write_usize(i);
+            }
+            Variable::Nil => {
+                state.write_u8(8);
             }
         }
     }
@@ -115,6 +130,7 @@ impl Variable {
             Variable::Array(_) => "array",
             Variable::Table(_) => "table",
             Variable::Coroutine(_) => "thread",
+            Variable::Userdata(_) => "userdata",
             Variable::Nil => "nil",
         }
     }
@@ -214,11 +230,39 @@ pub struct Coroutine {
     pub caller: Option<usize>,
 }
 
+/// Cached metamethods for faster lookup
+#[derive(Debug)]
+pub struct Metamethods([Variable; METAMETHOD_COUNT]);
+
+impl Metamethods {
+    pub fn new() -> Self {
+        Self([Variable::Nil])
+    }
+
+    pub fn get(&self, idx: usize) -> Variable {
+        self.0[idx]
+    }
+}
+
+#[derive(Debug)]
+pub enum UserDataPayload {
+    Value(u64), 
+    Pointer(Box<dyn std::any::Any>), 
+}
+
+#[derive(Debug)]
+pub struct Userdata {
+    pub payload: UserDataPayload,
+    pub metatable: Option<usize>,
+}
+
 /// Runtime table struct
 #[derive(Default, Debug)]
 pub struct Table {
     pub map: FxHashMap<Variable, Variable>,
     pub array: Vec<Variable>,
+    pub metamethods: Option<Box<Metamethods>>,
+    pub metatable: Option<usize>,
 }
 
 impl Table {
@@ -227,6 +271,8 @@ impl Table {
     }
 
     /// Get the variable stored at the index.
+    /// 
+    /// Note that this acts like rawget as it is guaranteed to **not** invoke any metamethods.
     pub fn get(&self, index: Variable) -> Variable {
         match index {
             Variable::Float(f) if f.fract() == 0.0 && f >= 0.0 => {
@@ -241,18 +287,26 @@ impl Table {
         }
     }
 
-    /// Sets a variable on the table, but forces it to be on the hashmap. This is **not** recommended for normal usage as it can easily cause memory leaks.
+    /// Sets a variable on the table, but forces it to be on the hashmap.
+    /// 
+    /// This is **not** recommended for normal usage as it can easily cause memory leaks.
     pub fn set_map(&mut self, index: Variable, var: Variable) {
         self.map.insert(index, var);
+
+        if let Some(mt) = &mut self.metamethods {
+            Self::try_move_to_metamethods(mt.deref_mut(), &index, &var); 
+        }
     }
 
-    /// Sets the field to a variable.
+    /// Sets the field to a variable. Note that this acts like rawset as it is guaranteed to **not** invoke any metamethods.
     pub fn set_field(&mut self, vm: &mut VM, field: &str, var: Variable) {
         let idx = vm.new_string(field);
         self.set(idx, var);
     }
 
     /// Sets a variable on the table at the desired index.
+    /// 
+    /// Note that this acts like rawset as it is guaranteed to **not** invoke any metamethods.
     pub fn set(&mut self, index: Variable, var: Variable) {
         match index {
             Variable::Float(f) => {
@@ -296,6 +350,25 @@ impl Table {
             _ => self.set_map(index, var),
         }
     }
+
+    #[inline(always)]
+    fn try_move_to_metamethods(mt: &mut Metamethods, key: &Variable, value: &Variable) {
+        if let Variable::String(idx) = *key {
+            if idx < METAMETHOD_COUNT {
+                mt.0[idx] = *value;
+            }
+        }
+    }
+
+    pub fn activate_metamethods(&mut self) {
+        let mut mt = Metamethods::new();
+
+        for (key, value) in self.map.iter() {
+            Self::try_move_to_metamethods(&mut mt, key, value); 
+        }
+
+        self.metamethods = Some(Box::new(mt));
+    }
 }
 
 /// Virtual Machine
@@ -328,6 +401,9 @@ pub struct VM {
     /// Every allocated string
     pub strings: Slab<String>,
 
+    /// Every allocated userdata
+    pub userdatas: Slab<Userdata>,
+
     /// Every allocated coroutine
     pub coroutines: Slab<Coroutine>,
     /// The index of the currently executing coroutine
@@ -336,7 +412,7 @@ pub struct VM {
     pub native_depth: usize,
 
     /// String storage used by the string interner
-    /// TODO: Optimize/replace/remove this
+    /// TODO: Optimize/replace this
     pub interned_strings: FxHashMap<String, usize>,
 
     /// UNUSED: Intended for when JIT is implemented
@@ -345,13 +421,20 @@ pub struct VM {
     /// UNUSED: Intended for when things like spanning is implemented so theres better runtime error handling, 
     /// but you can turn it off for better performance
     pub debug: bool,
+
+    /// Custom user defined data, this is intended so that the host application can store data on the VM.
+    pub userdata: *mut std::ffi::c_void,
+
+    pub registry: FxHashMap<String, Variable>,
+
+    pub yielded: bool,
 }
 
 impl VM {
     /// Creates a new VM with default values and JIT disabled.
     pub fn new() -> Self {
         let mut vm = VM {
-            debug: false,
+            debug: true,
             jit: false,
             ..Default::default()
         };
@@ -364,6 +447,9 @@ impl VM {
             caller: None,
         };
         vm.current_co = vm.coroutines.insert(main_co);
+
+        // Setup default interned strings
+        assert_eq!(vm.intern_string("__index"), __index);
         
         vm
     }
@@ -417,6 +503,10 @@ impl VM {
 
             // Execute instructions for this frame
             loop {
+                if self.yielded {
+                    return Ok(());
+                }
+
                 let instruction = {
                     let chunk = match self.functions.get(current_func_idx) {
                         Some(c) => c,
@@ -662,20 +752,25 @@ impl VM {
                         let start = (instruction >> 8) as u8;
                         let arg_count = instruction as u8;
 
-                        // Save the current IP for returning
-                        self.frames.last_mut().unwrap().ip = frame.ip;
+                        // Decode if there are multiple return values
+                        let multret = (arg_count & 0x80) != 0;
+                        let fixed_arg_count = arg_count & 0x7F;
 
-                        // Grab the function to execute
+                        self.frames.last_mut().unwrap().ip = frame.ip;
                         let func_var = self.get_register(target);
 
-                        // Collect arguments
-                        let mut args = Vec::with_capacity(arg_count as usize);
-                        for i in 0..arg_count {
-                            let arg_reg = (start as u16 + i as u16) as u8;
+                        let mut args = Vec::with_capacity(fixed_arg_count as usize + if multret { self.return_values.len() } else { 0 });
+                        for i in 0..fixed_arg_count {
+                            let arg_reg = start + i;
                             args.push(self.get_register(arg_reg));
                         }
+                        
+                        // if multiret is true append whatever results are currently in the buffer
+                        if multret {
+                            args.extend_from_slice(&self.return_values);
+                        }
 
-                        let context_changed = self.call(func_var, &args)?;
+                        let context_changed = self.rcall(func_var, &args, false)?;
                         if context_changed {
                             break;
                         } else {
@@ -686,15 +781,39 @@ impl VM {
                     RET => {
                         let start = (instruction >> 8) as u8;
                         let arg_count = instruction as u8;
+                        
+                        // Decode if there are multiple return values
+                        let multret = (arg_count & 0x80) != 0;
+                        let fixed_arg_count = arg_count & 0x7F;
                             
-                        self.return_values.clear();
-                        for i in 0..arg_count {
-                            self.return_values.push(self.get_register(start + i));
+                        // Build a new return buffer so we don't append to the old one
+                        let mut final_returns = Vec::with_capacity(fixed_arg_count as usize + if multret { self.return_values.len() } else { 0 });
+                        
+                        for i in 0..fixed_arg_count {
+                            final_returns.push(self.get_register(start + i));
                         }
+                        
+                        // Append the results of the previous call
+                        if multret {
+                            final_returns.extend_from_slice(&self.return_values);
+                        }
+                        
+                        self.return_values = final_returns;
 
                         let popped = self.frames.pop().unwrap();
                         self.registers.truncate(popped.register_base);
 
+                        // If this specific frame was pushed by Rust, exit run() to hand control back
+                        if popped.from_rust {
+                            if self.current_co != 0 && self.frames.is_empty() {
+                                let caller = self.coroutines[self.current_co].caller.unwrap_or(0);
+                                self.coroutines[self.current_co].state = CoroutineState::Dead;
+                                self.swap_context(caller);
+                            }
+                            return Ok(()); 
+                        }
+
+                        // Otherwise resume standard bytecode execution
                         if self.frames.is_empty() {
                             if self.current_co != 0 {
                                 let caller = self.coroutines[self.current_co].caller.unwrap_or(0);
@@ -705,7 +824,7 @@ impl VM {
                                 break;
                             }
                         } else {
-                            break;
+                            break; // break inner loop, outer loop reloads parent frame
                         }
                     }
 
@@ -743,53 +862,10 @@ impl VM {
                             _ => unreachable!(),
                         };
 
-                        match self.get_register(arr_reg) {
-                            Variable::Array(array_idx) => {
-                                let array = match self.arrays.get(array_idx) {
-                                    Some(a) => a,
-                                    None => {
-                                        return Err(RuntimeError::InternalError(
-                                            format!("Invalid array handle {array_idx}")
-                                        ))
-                                    }
-                                };
+                        let arr = self.get_register(arr_reg);
+                        let idx = self.get_register(idx_reg);
 
-                                match self.get_register(idx_reg) {
-                                    Variable::Float(f) => {
-                                        self.set_register(dest as usize, array.get((f - indexing as f64) as usize));
-                                    }
-                                    var => {
-                                        return Err(RuntimeError::TypeError(format!(
-                                            "attempted to index array with {}",
-                                            var.type_name()
-                                        )));
-                                    }
-                                }
-                            }
-                            Variable::Table(table_idx) => {
-                                let table = match self.tables.get(table_idx) {
-                                    Some(a) => a,
-                                    None => {
-                                        return Err(RuntimeError::InternalError(
-                                            format!("Invalid table handle {table_idx}")
-                                        ))
-                                    }
-                                };
-
-                                match self.get_register(idx_reg) {
-                                    Variable::Float(f) => {
-                                        self.set_register(dest as usize, table.get(Variable::Float(f - indexing as f64)));
-                                    }
-                                    var => self.set_register(dest as usize, table.get(var)),
-                                }
-                            }
-                            var => {
-                                return Err(RuntimeError::TypeError(format!(
-                                    "attempted to index {}",
-                                    var.type_name()
-                                )));
-                            }
-                        }
+                        self.get_field(arr, idx, indexing, dest as usize)?;
                     }
                     SET_FIELD => {
                         let target = (instruction >> 16) as u8;
@@ -909,11 +985,7 @@ impl VM {
         Ok(())
     }
 
-    /// Calls a function and passes the given arguments.
-    /// 
-    /// Returns `true` if the VM context was modified (e.g., a new frame was pushed or a coroutine swapped)
-    /// which signals that the execution loop needs to yield/restart its context.
-    pub fn call(&mut self, func: Variable, args: &[Variable]) -> Result<bool, RuntimeError> {
+    fn rcall(&mut self, func: Variable, args: &[Variable], from_rust: bool) -> Result<bool, RuntimeError> {
         // Validate that the variable is actually a function
         let func_idx = match func {
             Variable::Function(idx) => idx,
@@ -943,6 +1015,10 @@ impl VM {
             let result = func(self);
             self.native_depth -= 1;
             result?;
+
+            if self.yielded {
+                return Ok(true); 
+            }
             
             // Returns true if the rust function triggered a coroutine swap or pushed a bytecode frame
             Ok(self.current_co != prev_co || self.frames.len() != prev_frames)
@@ -954,17 +1030,142 @@ impl VM {
                 func_idx,
                 ip: 0,
                 register_base: new_base,
-                from_rust: true,
+                from_rust,
             });
 
-            self.run()?;
+            // Only recursively run if invoked by Rust to ensure directd
+            if from_rust {
+                self.run()?;
+            }
             
-            // Always returns true because lua definitely pushed a new frame onto the stack
             Ok(true) 
         }
     }
 
+    /// Calls a function and passes the given arguments.
+    /// 
+    /// Returns `true` if the VM context was modified (e.g., a new frame was pushed or a coroutine swapped)
+    /// which signals that the execution loop needs to yield/restart its context.
+    pub fn call(&mut self, func: Variable, args: &[Variable]) -> Result<bool, RuntimeError> {
+        self.rcall(func, args, true)
+    }
+
     // endregion:exec
+
+    pub fn get_field(&mut self, arr: Variable, idx: Variable, indexing: u8, dest: usize) -> Result<(), RuntimeError> {
+        match arr {
+            Variable::Array(array_idx) => {
+                let array = match self.arrays.get(array_idx) {
+                    Some(a) => a,
+                    None => {
+                        return Err(RuntimeError::InternalError(
+                            format!("Invalid array handle {array_idx}")
+                        ))
+                    }
+                };
+
+                match idx {
+                    Variable::Float(f) => {
+                        self.set_register(dest, array.get((f - indexing as f64) as usize));
+                    }
+                    var => {
+                        return Err(RuntimeError::TypeError(format!(
+                            "attempted to index array with {}",
+                            var.type_name()
+                        )));
+                    }
+                }
+            }
+            Variable::Table(table_idx) => {
+                let table = match self.tables.get(table_idx) {
+                    Some(a) => a,
+                    None => {
+                        return Err(RuntimeError::InternalError(
+                            format!("Invalid table handle {table_idx}")
+                        ))
+                    }
+                };
+                let val = match idx {
+                    Variable::Float(f) => table.get(Variable::Float(f - indexing as f64)),
+                    var => table.get(var),
+                };
+                
+                if let Variable::Nil = val {
+                    if let Some(mt) = table.metatable {
+                        let metamethods = self
+                            .tables
+                            .get(mt)
+                            .ok_or_else(|| RuntimeError::InternalError(format!("Invalid metatable handle {mt}")))?
+                            .metamethods
+                            .as_ref()
+                            .ok_or_else(|| RuntimeError::InternalError(format!("Table {mt} was not activated with activate_metamethods()")))?;
+                        
+                        let method = metamethods.get(__index);
+                        match method {
+                            Variable::Function(_) => {
+                                self.call(method, &[arr, idx])?;
+
+                                let result = self.return_values.first().copied().unwrap_or(Variable::Nil);
+                                self.set_register(dest, result);
+                            }
+                            Variable::Nil => {
+                                self.set_register(dest, Variable::Nil);
+                            }
+                            _ => {self.get_field(method, idx, indexing, dest)?;},
+                        };
+
+                        return Ok(());
+                    }
+                }
+
+                self.set_register(dest, val);
+            }
+            Variable::Userdata(userdata_idx) => {
+                let userdata = match self.userdatas.get(userdata_idx) {
+                    Some(a) => a,
+                    None => {
+                        return Err(RuntimeError::InternalError(
+                            format!("Invalid userdata handle {userdata_idx}")
+                        ))
+                    }
+                };
+                
+                if let Some(mt) = userdata.metatable {
+                    let metamethods = self
+                        .tables
+                        .get(mt)
+                        .ok_or_else(|| RuntimeError::InternalError(format!("Invalid metatable handle {mt}")))?
+                        .metamethods
+                        .as_ref()
+                        .ok_or_else(|| RuntimeError::InternalError(format!("Table {mt} was not activated with activate_metamethods()")))?;
+                    
+                    let method = metamethods.get(__index);
+                    match method {
+                        Variable::Function(_) => {
+                            self.call(method, &[arr, idx])?;
+
+                            let result = self.return_values.first().copied().unwrap_or(Variable::Nil);
+                            self.set_register(dest, result);
+                        }
+                        Variable::Nil => {} // fall through (so it doesnt do a lookup on nil)
+                        _ => {self.get_field(method, idx, indexing, dest)?;},
+                    };
+
+                    return Ok(());
+                }
+
+                return Err(RuntimeError::TypeError("attempted to index userdata".to_string()));
+            }
+            var => {
+                return Err(RuntimeError::TypeError(format!(
+                    "attempted to index {}",
+                    var.type_name()
+                )));
+            }
+        }
+
+        Ok(())
+    }
 
     // UNUSED: this is for later
     pub fn collect_garbage(&mut self) {

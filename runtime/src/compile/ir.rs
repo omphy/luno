@@ -44,11 +44,11 @@ pub enum IrInstruction {
     Label(JumpLabel),
     
     // Functions
-    Call { callee: VirtualVar, args: Vec<VirtualVar> },
+    Call { callee: VirtualVar, args: Vec<VirtualVar>, multret: bool },
     GetReturn { dest: VirtualVar, index: usize },
-    Return(Vec<VirtualVar>),
+    Return { values: Vec<VirtualVar>, multret: bool },
     /// Low level version of `Return`
-    Ret { start: u8, offset: u8 },
+    Ret { start: u8, offset: u8, multret: bool },
     
     // Globals
     GetGlobal { dest: VirtualVar, name: String },
@@ -112,13 +112,13 @@ impl IrInstruction {
                     f(val, Use);
                 }
             },
-            Self::Call { callee, args } => {
+            Self::Call { callee, args, multret: _ } => {
                 f(callee, Def);
                 for arg in args {
                     f(arg, Use);
                 }
             }
-            Self::Return(values) => {
+            Self::Return{ values, multret: _  } => {
                 for value in values {
                     f(value, Use);
                 }
@@ -148,7 +148,7 @@ impl IrInstruction {
             Self::NewTable(dest) => f(dest, Def),
             Self::Noop => {},
             Self::Jump(_) => {},
-            Self::Ret { start, offset } => {
+            Self::Ret { start, offset, multret: _  } => {
                 for reg in *start..=*start+*offset {
                     f(&mut VirtualVar(reg as usize), Use);
                 }

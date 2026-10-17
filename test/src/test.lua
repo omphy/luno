@@ -1,22 +1,9 @@
-local co = coroutine.create(function(var)
-    local co2 = coroutine.create(function(var)
-        print(var)
-        coroutine.yield()
-        print(var .. " 2.0")
-        coroutine.yield(5)
-        local a = "a"
-        local b = "a"
-        print(a == b)
-    end)
+local function hello()
+    return 1, 2, 3
+end
 
-    coroutine.resume(co2, "hello")
-    print(coroutine.resume(co2))
-    coroutine.resume(co2)
+local a, b, c, d = hello()
 
-    print(var)
-    coroutine.yield()
-    print(var .. " 2.0")
-end)
+print(a, b, c, d)
 
-coroutine.resume(co, "hi")
-coroutine.resume(co)
+

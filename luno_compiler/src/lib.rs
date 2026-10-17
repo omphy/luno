@@ -3,14 +3,12 @@ mod compiler;
 mod parser;
 mod token;
 
-use runtime::errors::CompileError;
 pub use runtime::rust_functions;
-pub use runtime::vm;
+pub use runtime::vm::{self, *};
+pub use runtime::errors::{self, *};
 
 use compiler::Compiler;
 use parser::parse_code;
-use runtime::vm::Table;
-use runtime::vm::Variable;
 use runtime::{Runtime, Language, SharedContext, standard_lib};
 
 pub struct Lua;
@@ -30,6 +28,8 @@ impl Lua {
     pub fn add_library(runtime: &mut Runtime) {
         // Print stuff
         runtime.vm.set_global_function("print", standard_lib::vm_print);
+
+        runtime.vm.set_global_function("setmetatable", standard_lib::vm_setmetatable);
         
         // Coroutines
         let mut coroutine = Table::new();

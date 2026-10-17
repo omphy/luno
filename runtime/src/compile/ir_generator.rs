@@ -1,5 +1,5 @@
 use crate::{bytecode::Chunk, errors::CompileError, ir::*};
-use std::{collections::HashMap, println};
+use std::collections::HashMap;
 
 // CONSIDER: some sort of heuristic for pass vector allocation
 
@@ -32,32 +32,32 @@ impl IrGenerator {
                     out.push(IrInstruction::SkipOnTrue(src));
                     out.push(IrInstruction::Jump(dest));
                 }
-                IrInstruction::Return(return_values) => {
-                    if return_values.is_empty() {
-                        // Return 0 values (start can be 0 or any dummy register)
+                IrInstruction::Return { values, multret } => {
+                    if values.is_empty() {
                         out.push(IrInstruction::Ret {
                             start: 0,
                             offset: 0,
+                            multret
                         });
-                    } else if return_values.windows(2).all(|w| w[1].0 == w[0].0 + 1) {
-                        // If the registers are already continious
+                    } else if values.windows(2).all(|w| w[1].0 == w[0].0 + 1) {
                         out.push(IrInstruction::Ret {
-                            start: return_values[0].0 as u8,
-                            offset: return_values.len() as u8,
+                            start: values[0].0 as u8,
+                            offset: values.len() as u8,
+                            multret
                         });
                     } else {
-                        // Pick a start register safely above all source registers.
-                        let max_src = return_values.iter().map(|r| r.0).max().unwrap();
+                        let max_src = values.iter().map(|r| r.0).max().unwrap();
                         let start = max_src + 1;
 
-                        for (i, &src) in return_values.iter().enumerate() {
-                            let dest = VirtualVar(start + i); // adjust cast to match your Register inner type
+                        for (i, &src) in values.iter().enumerate() {
+                            let dest = VirtualVar(start + i);
                             out.push(IrInstruction::Copy { dest, src });
                         }
 
                         out.push(IrInstruction::Ret {
                             start: start as u8,
-                            offset: return_values.len() as u8,
+                            offset: values.len() as u8,
+                            multret
                         });
                     }
                 }
@@ -106,9 +106,11 @@ impl IrGenerator {
                 }
                 IrInstruction::Copy { dest, src } => chunk.add_mov(dest.0 as u8, src.0 as u8),
                 // CONSIDER: Move call to `pass_extend` and then make a low level version, similar to Return.
-                IrInstruction::Call { callee, args } => {
+                IrInstruction::Call { callee, args, multret } => {
                     let target = callee.0 as u8;
-                    let arg_count = args.len() as u8;
+
+                    // pack the multret flag into the most significant bit
+                    let arg_count = (args.len() as u8 & 0x7F) | if multret { 0x80 } else { 0 };
                     
                     let start = args.first().map(|v| v.0).unwrap_or(0) as u8;
                     chunk.add_call(target, start, arg_count);
@@ -145,7 +147,11 @@ impl IrGenerator {
                 }
                 IrInstruction::SetField { object, index, src } => chunk.add_set_field(object.0 as u8, index.0 as u8, src.0 as u8),
                 IrInstruction::GetField { dest, object, index } => chunk.add_get_field(dest.0 as u8, object.0 as u8, index.0 as u8),
-                IrInstruction::Ret { start, offset } => chunk.add_ret(start as u8, offset as u8),
+                IrInstruction::Ret { start, offset, multret } => {
+                    // Pack the multret flag into the most significant bit like call
+                    let arg_count = (offset & 0x7F) | if multret { 0x80 } else { 0 };
+                    chunk.add_ret(start, arg_count);
+                }
                 IrInstruction::NewArray(dest) => chunk.add_newarray(dest.0 as u8),
                 IrInstruction::NewTable(dest) => chunk.add_newtable(dest.0 as u8),
                 IrInstruction::AppendArray { dest, src } => chunk.add_append_array(dest.0 as u8, src.0 as u8),
@@ -168,7 +174,7 @@ impl IrGenerator {
         
         // Ensure that every function ends with RET to satisfy the VM
         if !matches!(instructions.last(), Some(IrInstruction::Ret { .. })) {
-            instructions.push(IrInstruction::Ret { start: 0, offset: 0 });
+            instructions.push(IrInstruction::Ret { start: 0, offset: 0, multret: false });
         }
 
         self.pass_emit_bytecode(instructions)

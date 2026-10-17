@@ -10,6 +10,7 @@ pub fn var_tostring(vm: &crate::VM, var: &vm::Variable) -> String {
         Variable::Array(arr) => format!("array: {:p}", &vm.arrays[*arr]),
         Variable::Table(tb) => format!("table: {:p}", &vm.tables[*tb]),
         Variable::Coroutine(tb) => format!("thread: {:p}", &vm.coroutines[*tb]),
+        Variable::Userdata(tb) => format!("userdata: {:p}", &vm.userdatas[*tb]),
         Variable::Nil => "nil".to_string(), // truly some crazy stuff
     }
 }
@@ -33,6 +34,20 @@ pub fn vm_print(vm: &mut crate::VM) -> Result<(), RuntimeError> {
     log::info!("{}", output);
     Ok(())
 }
+
+pub fn vm_setmetatable(vm: &mut VM) -> Result<(), RuntimeError> {
+    let tb_idx = vm.get_table_idx(0)?;
+    let mt_idx = vm.get_table_idx(1)?; // metatable
+    
+    vm.tables[mt_idx].activate_metamethods();
+    vm.tables[tb_idx].metatable = Some(mt_idx);
+    
+    // Return the table
+    vm.return_values = vec![Variable::Table(tb_idx)];
+    Ok(())
+}
+
+// region:coroutines
 
 /// Create a new coroutine with a function as input
 pub fn vm_co_create(vm: &mut VM) -> Result<(), RuntimeError> {
@@ -106,3 +121,5 @@ pub fn vm_co_yield(vm: &mut VM) -> Result<(), RuntimeError> {
     vm.swap_context(caller);
     Ok(())
 }
+
+// endregion:coroutines

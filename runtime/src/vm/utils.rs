@@ -27,13 +27,13 @@ impl VM {
     }
 
     /// Gets the index of a function on the heap from the register
-    pub(super) fn get_function_index(&self, register: u8) -> Result<usize, RuntimeError> {
-        let var = self.get_register(register);
-        match var {
-            Variable::Function(idx) => Ok(idx),
-            _ => Err(RuntimeError::TypeError(format!("expected function, got {}", var.type_name())))
-        }
-    }
+    // pub(super) fn get_function_index(&self, register: u8) -> Result<usize, RuntimeError> {
+    //     let var = self.get_register(register);
+    //     match var {
+    //         Variable::Function(idx) => Ok(idx),
+    //         _ => Err(RuntimeError::TypeError(format!("expected function, got {}", var.type_name())))
+    //     }
+    // }
 
     /// Interns the string
     pub fn intern_string(&mut self, s: &str) -> usize {
@@ -47,7 +47,7 @@ impl VM {
         self.interned_strings.insert(s.to_string(), idx);
         idx
     }
-
+    
     /// Turns the number into a string, if its already a string it simply returns the string, otherwise it raises an error.
     pub fn num_to_str(&mut self, val: Variable) -> Result<String, RuntimeError> {
         match val {
