@@ -37,6 +37,7 @@ But unlike other code, most of the experimental JIT related code is inherently a
 * `if`, `while` and `do` blocks are all fully implemented.
 * Simple Rust API for interacting with the VM.
 * Coroutine support.
+* Metatables and some metamethods.
 
 ### Unimplemented
 * A garbage collector.
@@ -45,7 +46,7 @@ But unlike other code, most of the experimental JIT related code is inherently a
 * `for` loops and `goto`.
 * Suport for varargs (`...`).
 * Usable error messages.
-* Metatables and metamethods
+* Most metamethods.
 
 ## Additional Goals
 ### Planned
